@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+
+## #ddev-generated
+## Description: Interact with the Floci local Azure emulator
+## Usage: floci-az [az|connstring|env|url|endpoint|health|accounts|logs|flush|reset|shell] [args]
+## Example: "ddev floci-az az storage container create --name uploads"\n"ddev floci-az connstring"\n"ddev floci-az url"\n"ddev floci-az health"\n"ddev floci-az logs -f"\n"ddev floci-az flush"\n"ddev floci-az reset"
+
+set -eu -o pipefail
+
+CONTAINER="ddev-${DDEV_PROJECT}-floci-az"
+ENV_FILE="${DDEV_APPROOT}/.ddev/.env.floci-az"
+
+dotenv() {
+  # Reads one FLOCI_AZ_* value out of the add-on's .env file, falling back to
+  # the default the compose file uses. The account key is base64 and ends in
+  # '==', so only quotes and spaces are stripped, never '='.
+  local value
+  value="$(grep -sE "^${1}=" "${ENV_FILE}" | tail -n1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/" || true)"
+  echo "${value:-$2}"
+}
+
+DEV_KEY='Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMh0=='
+
+HOSTNAME_IN_NETWORK="$(dotenv FLOCI_AZ_HOSTNAME floci-az)"
+ACCOUNT="$(dotenv FLOCI_AZ_ACCOUNT_NAME devstoreaccount1)"
+ACCOUNT_KEY="$(dotenv FLOCI_AZ_ACCOUNT_KEY "${DEV_KEY}")"
+HTTP_PORT="$(dotenv FLOCI_AZ_HTTP_PORT 4577)"
+HTTPS_PORT="$(dotenv FLOCI_AZ_HTTPS_PORT 4579)"
+NAMESPACE="$(dotenv FLOCI_AZ_DOCKER_RESOURCE_NAMESPACE "${DDEV_PROJECT}")"
+
+INTERNAL_URL="http://${HOSTNAME_IN_NETWORK}:4577"
+# ddev-router, routed by hostname: shared between projects rather than owned by
+# one, and stable across restarts. Everything floci-az serves is REST, so the
+# router carries all of it — there is no direct host port to manage, and no
+# port for two projects to fight over.
+HOST_URL="http://${DDEV_HOSTNAME%%,*}:${HTTP_PORT}"
+ROUTER_TLS_URL="https://${DDEV_HOSTNAME%%,*}:${HTTPS_PORT}"
+
+# floci-az routes by path prefix rather than by port, so every service endpoint
+# is the base URL plus a suffix on the account name.
+connection_string() {
+  local base="$1"
+  printf 'DefaultEndpointsProtocol=http;AccountName=%s;AccountKey=%s;BlobEndpoint=%s/%s;QueueEndpoint=%s/%s-queue;TableEndpoint=%s/%s-table;' \
+    "${ACCOUNT}" "${ACCOUNT_KEY}" \
+    "${base}" "${ACCOUNT}" \
+    "${base}" "${ACCOUNT}" \
+    "${base}" "${ACCOUNT}"
+}
+
+require_running() {
+  if ! docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+    echo "Floci is not running. Try 'ddev start'." >&2
+    exit 1
+  fi
+}
+
+# /health and /_admin/* are plain REST, so the router serves them directly. The
+# container has no curl to exec into — the runtime image is deliberately minimal.
+emulator_curl() {
+  curl -sf -X "$1" "${HOST_URL}$2"
+}
+
+case "${1:-url}" in
+  az)
+    require_running
+    shift
+    # The connection string is injected here rather than through `azfloci`, the
+    # wrapper the compat image ships. azfloci does the same job, but it also
+    # exports REQUESTS_CA_BUNDLE="" and current Azure CLI versions reject that
+    # outright — "REQUESTS_CA_BUNDLE environment variable is specified with an
+    # invalid file path" — so every command through it fails. Doing it directly
+    # also means the account name and key follow .env.floci-az, which azfloci's
+    # hardcoded values would not.
+    #
+    # Inside the container the emulator is localhost:4577.
+    if ! docker exec "${CONTAINER}" sh -c 'command -v az >/dev/null 2>&1'; then
+      cat >&2 <<'MSG'
+This Floci image does not include the Azure CLI. Switch to the compat image:
+
+  ddev dotenv set .ddev/.env.floci-az --floci-az-image=floci/floci-az:latest-compat
+  ddev restart
+
+Or run your own az against the emulator:
+
+  eval "$(ddev floci-az env)"
+MSG
+      exit 1
+    fi
+    docker exec -i \
+      -e AZURE_STORAGE_CONNECTION_STRING="$(connection_string "http://localhost:4577")" \
+      -e AZURE_STORAGE_ALLOW_HTTP=true \
+      -e AZURE_CORE_ONLY_SHOW_ERRORS=false \
+      "${CONTAINER}" az "$@"
+    ;;
+
+  connstring|connection-string)
+    # The in-project string by default, because that is the one that goes in
+    # application config; --host for the one your terminal can use.
+    if [ "${2:-}" = "--host" ]; then
+      connection_string "${HOST_URL}"
+    else
+      connection_string "${INTERNAL_URL}"
+    fi
+    echo
+    ;;
+
+  env)
+    # `eval "$(ddev floci-az env)"` configures the current shell for a host-side
+    # `az` or SDK. Everything points at the direct port.
+    if [ "${2:-}" = "--unset" ]; then
+      for v in AZURE_STORAGE_CONNECTION_STRING AZURE_STORAGE_ACCOUNT AZURE_STORAGE_KEY \
+               AZURE_STORAGE_ALLOW_HTTP AZURE_STORAGE_BLOB_ENDPOINT AZURE_STORAGE_QUEUE_ENDPOINT \
+               AZURE_STORAGE_TABLE_ENDPOINT AZURE_KEY_VAULT_ENDPOINT AZURE_COSMOS_ENDPOINT \
+               AZURE_APP_CONFIGURATION_ENDPOINT AZURE_AUTHORITY_HOST FLOCI_AZ_ENDPOINT; do
+        echo "unset ${v}"
+      done
+    else
+      echo "export AZURE_STORAGE_CONNECTION_STRING=\"$(connection_string "${HOST_URL}")\""
+      echo "export AZURE_STORAGE_ACCOUNT=\"${ACCOUNT}\""
+      echo "export AZURE_STORAGE_KEY=\"${ACCOUNT_KEY}\""
+      echo "export AZURE_STORAGE_ALLOW_HTTP=\"true\""
+      echo "export AZURE_STORAGE_BLOB_ENDPOINT=\"${HOST_URL}/${ACCOUNT}\""
+      echo "export AZURE_STORAGE_QUEUE_ENDPOINT=\"${HOST_URL}/${ACCOUNT}-queue\""
+      echo "export AZURE_STORAGE_TABLE_ENDPOINT=\"${HOST_URL}/${ACCOUNT}-table\""
+      echo "export AZURE_KEY_VAULT_ENDPOINT=\"${HOST_URL}/${ACCOUNT}-keyvault\""
+      echo "export AZURE_COSMOS_ENDPOINT=\"${HOST_URL}/${ACCOUNT}-cosmos\""
+      echo "export AZURE_APP_CONFIGURATION_ENDPOINT=\"$(echo "${HOST_URL}" | sed 's|^http://|https://|')/${ACCOUNT}-appconfig\""
+      echo "export AZURE_AUTHORITY_HOST=\"${HOST_URL}/\""
+      echo "export FLOCI_AZ_ENDPOINT=\"${HOST_URL}\""
+      echo "# eval \"\$(ddev floci-az env)\" to apply these to this shell."
+    fi
+    ;;
+
+  url|endpoint)
+    case "${2:-}" in
+      --internal) echo "${INTERNAL_URL}" ;;
+      --host)     echo "${HOST_URL}" ;;
+      --router)   echo "${HOST_URL}" ;;
+      --router-tls) echo "${ROUTER_TLS_URL}" ;;
+      *)
+        echo "From the project (web container, Functions, SQL): ${INTERNAL_URL}"
+        echo "From the host (az CLI, Terraform, your IDE):      ${HOST_URL}"
+        echo "                                           (TLS: ${ROUTER_TLS_URL})"
+        echo
+        echo "The host endpoint is ddev-router, routed by hostname, so it is stable"
+        echo "across restarts and shared with any other project running this add-on."
+        ;;
+    esac
+    ;;
+
+  health)
+    require_running
+    if command -v curl >/dev/null 2>&1; then
+      emulator_curl GET /health || {
+        echo "No response from the emulator's /health endpoint." >&2
+        exit 1
+      }
+      echo
+    else
+      docker inspect --format '{{.State.Health.Status}}' "${CONTAINER}"
+    fi
+    ;;
+
+  accounts)
+    # Storage accounts that exist right now. Handy for confirming that whatever
+    # your app created actually landed.
+    require_running
+    emulator_curl GET /_admin/accounts
+    echo
+    ;;
+
+  logs)
+    require_running
+    shift
+    docker logs "${CONTAINER}" "$@"
+    ;;
+
+  shell)
+    require_running
+    shift
+    docker exec -it "${CONTAINER}" "${@:-sh}"
+    ;;
+
+  flush)
+    # Wipes every emulated resource in place, without a restart and without
+    # touching the containers Floci has spawned. This is the one to reach for
+    # between test runs; `reset` is the heavier hammer.
+    require_running
+    emulator_curl POST /_admin/reset >/dev/null
+    echo "Emulator state wiped."
+    ;;
+
+  reset)
+    # Emulator state lives in a named volume, so wiping it for good means
+    # removing the volume while the container is down.
+    if [ "${2:-}" != "-y" ] && [ "${2:-}" != "--yes" ]; then
+      printf 'This deletes all emulated Azure state for %s. Continue? [y/N] ' "${DDEV_PROJECT}"
+      read -r reply
+      case "${reply}" in [yY]*) ;; *) echo "Aborted." >&2; exit 1 ;; esac
+    fi
+    docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
+
+    # Floci starts real containers for Functions, SQL Server, Cosmos engines,
+    # Redis, ACR and AKS, and DDEV does not know about them, so they outlive
+    # `ddev stop`. Two filters, both needed: floci_emulator=floci-az excludes
+    # the AWS and GCP emulators, which share the broader floci=true label, and
+    # floci_namespace scopes this to THIS project, so another project's Azure
+    # emulator is left alone.
+    spawned="$(docker ps -aq \
+      --filter "label=floci_emulator=floci-az" \
+      --filter "label=floci_namespace=${NAMESPACE}")"
+    if [ -n "${spawned}" ]; then
+      docker rm -f ${spawned} >/dev/null
+      echo "Removed containers Floci had started for this project."
+    fi
+    # Same for the volumes those containers wrote to — a SQL Server instance's
+    # data directory, for instance.
+    spawned_vols="$(docker volume ls -q \
+      --filter "label=floci_emulator=floci-az" \
+      --filter "label=floci_namespace=${NAMESPACE}")"
+    if [ -n "${spawned_vols}" ]; then
+      docker volume rm ${spawned_vols} >/dev/null
+    fi
+
+    # Compose prefixes the emulator's own volume with its project name, which
+    # DDEV sets to ddev-<project>. Match on the compose labels rather than on
+    # the name alone, so this can never reach into another project's volumes.
+    vol="$(docker volume ls -q \
+      --filter "label=com.docker.compose.project=ddev-${DDEV_PROJECT}" \
+      --filter "label=com.docker.compose.volume=floci-az")"
+    if [ -n "${vol}" ]; then
+      docker volume rm ${vol} >/dev/null
+      echo "Floci state removed. Run 'ddev restart' to start clean."
+    else
+      echo "No Floci state volume found for '${DDEV_PROJECT}'; nothing to remove."
+    fi
+    ;;
+
+  *)
+    echo "usage: ddev floci-az [az|connstring|env|url|endpoint|health|accounts|logs|flush|reset|shell]" >&2
+    exit 1
+    ;;
+esac

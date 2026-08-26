@@ -1,0 +1,11 @@
+#ddev-generated
+# floci-az has no initialization-hook mechanism of its own — unlike the AWS and
+# GCP emulators there is no /etc/floci-az/init directory to drop scripts into —
+# so the default Blob Storage containers are created from a DDEV post-start
+# hook instead.
+#
+# exec-host rather than exec: the script talks to the floci-az container through
+# the Docker socket on your machine, not from inside the web container.
+hooks:
+  post-start:
+    - exec-host: bash "${DDEV_APPROOT}/.ddev/floci-az/create-containers.sh"

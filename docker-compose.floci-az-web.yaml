@@ -1,0 +1,61 @@
+#ddev-generated
+# Points the project's own web container at the emulator.
+#
+# Azure has no `*_EMULATOR_HOST` convention the way GCP does. What it has
+# instead is the connection string, which carries the endpoints and the
+# credentials together — and `AZURE_STORAGE_CONNECTION_STRING` is the one
+# variable that every Azure Storage SDK and the `az storage` CLI read on their
+# own. The rest below are endpoints your code passes to a client constructor;
+# nothing picks them up automatically.
+#
+# Interpolation keeps these in sync with docker-compose.floci-az.yaml.
+services:
+  web:
+    environment:
+      # The Azurite-style development connection string, pointed at the
+      # container. Note the three different paths: floci-az routes by path
+      # prefix, so Blob is /<account>, Queue is /<account>-queue and Table is
+      # /<account>-table, all on the one port.
+      AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1};AccountKey=${FLOCI_AZ_ACCOUNT_KEY:-Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMh0==};BlobEndpoint=http://${FLOCI_AZ_HOSTNAME:-floci-az}:4577/${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1};QueueEndpoint=http://${FLOCI_AZ_HOSTNAME:-floci-az}:4577/${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1}-queue;TableEndpoint=http://${FLOCI_AZ_HOSTNAME:-floci-az}:4577/${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1}-table;"
+      AZURE_STORAGE_ACCOUNT: ${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1}
+      AZURE_STORAGE_KEY: ${FLOCI_AZ_ACCOUNT_KEY:-Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMh0==}
+      # Some tooling refuses a plaintext endpoint unless told the risk is
+      # accepted; it is a local emulator, so it is.
+      AZURE_STORAGE_ALLOW_HTTP: "true"
+
+      # Per-service endpoints, for the SDKs that take a URL rather than a
+      # connection string. These are Floci's own names — the ones `floci az env
+      # --format sdk-vars` prints — and nothing reads them automatically.
+      AZURE_STORAGE_BLOB_ENDPOINT: http://${FLOCI_AZ_HOSTNAME:-floci-az}:4577/${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1}
+      AZURE_STORAGE_QUEUE_ENDPOINT: http://${FLOCI_AZ_HOSTNAME:-floci-az}:4577/${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1}-queue
+      AZURE_STORAGE_TABLE_ENDPOINT: http://${FLOCI_AZ_HOSTNAME:-floci-az}:4577/${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1}-table
+      AZURE_KEY_VAULT_ENDPOINT: http://${FLOCI_AZ_HOSTNAME:-floci-az}:4577/${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1}-keyvault
+      AZURE_COSMOS_ENDPOINT: http://${FLOCI_AZ_HOSTNAME:-floci-az}:4577/${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1}-cosmos
+      # https:// on purpose — the App Configuration SDK rejects a plaintext
+      # endpoint outright, so the convention is an https URL plus a transport
+      # that rewrites the scheme. See "App Configuration" in the README.
+      AZURE_APP_CONFIGURATION_ENDPOINT: https://${FLOCI_AZ_HOSTNAME:-floci-az}:4577/${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1}-appconfig
+      # This add-on's own name for the bare emulator root, for ARM calls and
+      # anything routed by subscription path.
+      FLOCI_AZ_ENDPOINT: http://${FLOCI_AZ_HOSTNAME:-floci-az}:4577
+
+      # Entra ID. floci-az issues real RS256-signed JWTs from a seeded tenant and
+      # app registration, so ClientSecretCredential works with no setup —
+      # AZURE_AUTHORITY_HOST is the one variable DefaultAzureCredential and MSAL
+      # read on their own.
+      AZURE_AUTHORITY_HOST: http://${FLOCI_AZ_HOSTNAME:-floci-az}:4577/
+      AZURE_TENANT_ID: ${FLOCI_AZ_SERVICES_ENTRA_DEFAULT_TENANT_ID:-00000000-0000-0000-0000-000000000002}
+      AZURE_CLIENT_ID: ${FLOCI_AZ_CLIENT_ID:-11111111-1111-1111-1111-111111111111}
+      AZURE_CLIENT_SECRET: ${FLOCI_AZ_CLIENT_SECRET:-floci-az-dev-secret}
+      AZURE_SUBSCRIPTION_ID: ${FLOCI_AZ_SUBSCRIPTION_ID:-00000000-0000-0000-0000-000000000001}
+      # The two Blob containers the post-start hook creates. No SDK reads
+      # these on its own — they are here so application config can say
+      # getenv('AZURE_PUBLIC_CONTAINER') rather than hardcoding a name.
+      AZURE_PUBLIC_CONTAINER: ${FLOCI_AZ_PUBLIC_CONTAINER:-public}
+      AZURE_PRIVATE_CONTAINER: ${FLOCI_AZ_PRIVATE_CONTAINER:-private}
+      AZURE_STORAGE_CONTAINER: ${FLOCI_AZ_PUBLIC_CONTAINER:-public}
+      # The base URL for a blob as a BROWSER must see it — ddev-router, not
+      # floci-az:4577, which only resolves inside Docker.
+      AZURE_PUBLIC_CONTAINER_URL: http://${DDEV_SITENAME}.${DDEV_TLD}:${FLOCI_AZ_HTTP_PORT:-4577}/${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1}/${FLOCI_AZ_PUBLIC_CONTAINER:-public}
+    depends_on:
+      - floci-az

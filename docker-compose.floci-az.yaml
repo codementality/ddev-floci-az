@@ -1,0 +1,125 @@
+#ddev-generated
+# floci-az: a local Azure emulator (https://floci.io/az/), MIT licensed.
+#
+# The service, its container, its volume and its `ddev floci-az` command are all
+# named for the cloud they emulate, not for Floci itself, so the AWS and GCP
+# add-ons can be installed in the same project without colliding.
+#
+# The whole Azure API surface is served on one port, 4577, routed by path
+# prefix: /devstoreaccount1 is Blob, /devstoreaccount1-queue is Queue,
+# /devstoreaccount1-table is Table, and so on. From inside the project the
+# endpoint is http://floci-az:4577.
+#
+# The variables below are Floci's own names rather than add-on-specific aliases,
+# because floci-az already namespaces everything under FLOCI_AZ_*. Anything in
+# the upstream reference works here verbatim:
+#   ddev dotenv set .ddev/.env.floci-az --floci-az-storage-mode=memory
+#   ddev dotenv set .ddev/.env.floci-az --floci-az-services-sql-accept-eula=Y
+services:
+  floci-az:
+    container_name: ddev-${DDEV_SITENAME}-floci-az
+    hostname: ${FLOCI_AZ_HOSTNAME:-floci-az}
+    # `latest-compat` adds the Azure CLI and the `azfloci` wrapper on top of the
+    # ~78 MB native image, which is what makes `ddev floci-az az ...` work with
+    # no setup. It is a much bigger image (~205 MB) because the Azure CLI is a
+    # large Python distribution. For the lean image instead:
+    #   ddev dotenv set .ddev/.env.floci-az --floci-az-image=floci/floci-az:latest
+    image: ${FLOCI_AZ_IMAGE:-floci/floci-az:latest-compat}
+    restart: "no"
+    expose:
+      - 4577
+    # These labels ensure this service is discoverable by DDEV.
+    labels:
+      com.ddev.site-name: ${DDEV_SITENAME}
+      com.ddev.approot: ${DDEV_APPROOT}
+    environment:
+      # ddev-router: the Azure endpoint on http://<project>.ddev.site:4577 and
+      # https://<project>.ddev.site:4579.
+      #
+      # The router routes by hostname, so these two ports are SHARED between
+      # every project that installs this add-on rather than owned by one of
+      # them — each project's requests reach its own emulator. Two projects can
+      # run at once, and removing one cannot disturb the other.
+      #
+      # The plain-HTTP port matters more here than it looks: an Azure connection
+      # string carries its own scheme, and the local-development convention is
+      # DefaultEndpointsProtocol=http. Having a stable http endpoint means the
+      # connection string never has to fight certificate validation, and never
+      # has to change.
+      #
+      # 4579 rather than 4578 because floci-az serves Cosmos DB's HTTPS-only
+      # Java SDK endpoint on 4578 itself.
+      VIRTUAL_HOST: ${DDEV_HOSTNAME}
+      HTTP_EXPOSE: ${FLOCI_AZ_HTTP_PORT:-4577}:4577
+      HTTPS_EXPOSE: ${FLOCI_AZ_HTTPS_PORT:-4579}:4577
+
+      # The host Floci puts in the URLs it hands back — SAS tokens, operation
+      # locations, function invoke URLs, JDBC URLs. They name the container, not
+      # localhost, because the consumer is normally the project's own web
+      # container. Upstream's default is localhost, which is exactly the thing
+      # that breaks in a multi-container setup.
+      FLOCI_AZ_HOSTNAME: ${FLOCI_AZ_HOSTNAME:-floci-az}
+      FLOCI_AZ_BASE_URL: ${FLOCI_AZ_BASE_URL:-http://${FLOCI_AZ_HOSTNAME:-floci-az}:4577}
+
+      # memory | persistent | hybrid | wal. Upstream defaults to `memory`; this
+      # add-on defaults to `hybrid` — in-memory speed with an async flush every
+      # five seconds — so state survives `ddev restart`. Use `memory` in CI.
+      FLOCI_AZ_STORAGE_MODE: ${FLOCI_AZ_STORAGE_MODE:-hybrid}
+      FLOCI_AZ_STORAGE_PERSISTENT_PATH: /app/data
+
+      # dev accepts any credentials and any signature, which is what makes the
+      # emulator usable without real keys. `strict` validates HMAC-SHA256 if you
+      # want to catch signing bugs locally.
+      FLOCI_AZ_AUTH_MODE: ${FLOCI_AZ_AUTH_MODE:-dev}
+
+      # Docker-backed services (Functions, Cosmos engines, SQL Server, Postgres,
+      # Redis, ACR, AKS) launch their own containers. Putting them on this
+      # project's own network — DDEV names it ddev-<project>_default — is what
+      # lets the web container reach them by name and lets them reach Floci
+      # back. Without it they bind random ports straight onto the host, where
+      # the web container cannot follow.
+      FLOCI_AZ_SERVICES_DOCKER_NETWORK: ${FLOCI_AZ_SERVICES_DOCKER_NETWORK:-ddev-${DDEV_SITENAME}_default}
+
+      # Names and labels every container and volume Floci spawns with this
+      # project, so two DDEV projects can each run a SQL Server or a Redis cache
+      # at the same time without claiming the same container. `ddev floci-az
+      # reset` cleans up by this label.
+      FLOCI_AZ_DOCKER_RESOURCE_NAMESPACE: ${FLOCI_AZ_DOCKER_RESOURCE_NAMESPACE:-${DDEV_SITENAME}}
+
+      # Azure Functions run in their own containers and have to call back into
+      # the emulator for bindings; this is the hostname they use.
+      FLOCI_AZ_SERVICES_FUNCTIONS_DOCKER_HOST_OVERRIDE: ${FLOCI_AZ_HOSTNAME:-floci-az}
+
+      # Public resolvers appended to spawned containers so function code can
+      # resolve public hostnames. Set to false on an offline or locked-down
+      # network where 8.8.8.8 is blocked.
+      FLOCI_AZ_DNS_CONTAINER_FALLBACK_ENABLED: ${FLOCI_AZ_DNS_CONTAINER_FALLBACK_ENABLED:-true}
+
+      # Microsoft's SQL Server image requires the EULA to be accepted before it
+      # will start, so Azure SQL is ARM-state-only until you say yes:
+      #   ddev dotenv set .ddev/.env.floci-az --floci-az-services-sql-accept-eula=Y
+      # The default is a literal N rather than an empty value: floci-az refuses
+      # to boot at all if this is set to the empty string.
+      FLOCI_AZ_SERVICES_SQL_ACCEPT_EULA: ${FLOCI_AZ_SERVICES_SQL_ACCEPT_EULA:-N}
+
+      # Read by floci-az/create-containers.sh, which the post-start hook in
+      # config.floci-az.yaml runs. Either can be set to an empty string to skip
+      # it. Not Floci variables — this add-on's own.
+      FLOCI_AZ_PUBLIC_CONTAINER: ${FLOCI_AZ_PUBLIC_CONTAINER:-public}
+      FLOCI_AZ_PRIVATE_CONTAINER: ${FLOCI_AZ_PRIVATE_CONTAINER:-private}
+    volumes:
+      # Emulator state. A named volume rather than a bind mount: Floci writes as
+      # uid 1001 and a host-owned directory would be read-only to it.
+      - "floci-az:/app/data"
+    # No healthcheck here on purpose: the image ships its own, polling
+    # /_floci/health, and `ddev start` waits on it.
+    x-ddev:
+      describe-info: |
+        Endpoint (in project): http://${FLOCI_AZ_HOSTNAME:-floci-az}:4577
+        Endpoint (from host):  https://${DDEV_HOSTNAME}:${FLOCI_AZ_HTTPS_PORT:-4579}
+        Storage account: ${FLOCI_AZ_ACCOUNT_NAME:-devstoreaccount1}
+        Storage mode: ${FLOCI_AZ_STORAGE_MODE:-hybrid}  Auth mode: ${FLOCI_AZ_AUTH_MODE:-dev}
+        Containers: ${FLOCI_AZ_PUBLIC_CONTAINER:-public} / ${FLOCI_AZ_PRIVATE_CONTAINER:-private} (permissions advisory only)
+
+volumes:
+  floci-az:

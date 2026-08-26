@@ -1,0 +1,36 @@
+#ddev-generated
+# Hands Floci the host's Docker socket.
+#
+# floci-az backs Azure Functions, the Cosmos DB engines (MongoDB, PostgreSQL,
+# Cassandra), Azure SQL, PostgreSQL and MySQL Flexible Server, Cache for Redis,
+# Container Registry and AKS with REAL containers rather than mocking their
+# responses — a real SQL Server, a real Valkey, a real k3s cluster, your actual
+# function code executing. It cannot do that without the socket. Everything
+# in-process — Blob, Queue and Table Storage, Key Vault, App Configuration,
+# Cosmos NoSQL, Entra ID, Managed Identity, Event Grid, Monitor, APIM, Email,
+# the whole ARM management plane — works without it.
+#
+# The socket is also what powers Floci's embedded DNS, which is how function
+# containers resolve the emulator.
+#
+# Mounting the socket gives the container control of the host's Docker daemon,
+# which is effectively root on the host. That is the same bargain LocalStack and
+# Testcontainers ask for, but it is a real one. If this project only uses the
+# in-process services, delete this file and restart:
+#
+#   rm .ddev/docker-compose.floci-az-docker.yaml && ddev restart
+#
+# You can also keep the socket but stop individual services from spawning
+# anything, by putting each one in mock (control-plane-only) mode:
+#
+#   ddev dotenv set .ddev/.env.floci-az --floci-az-services-functions-mocked=true
+#
+# Note that Event Hubs, Service Bus and Virtual Machines ship mocked already;
+# only the services listed above spawn containers out of the box.
+#
+# The image's entrypoint starts as root only to fix up the socket's group
+# ownership, then drops to the unprivileged `floci` user via gosu.
+services:
+  floci-az:
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"

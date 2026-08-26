@@ -1,0 +1,96 @@
+name: floci-az
+
+# Requires `ddev dotenv` and modern add-on removal handling.
+ddev_version_constraint: '>= v1.24.10'
+
+# DDEV installs this automatically, and — because it tracks the dependency both
+# ways — refuses to remove floci-ui while any emulator add-on still declares it:
+#   cannot remove add-on 'floci-ui' because the following add-ons depend on it: ...
+# Removing the last emulator warns that floci-ui is left behind, rather than
+# pulling a console out from under another add-on that is still using it.
+dependencies:
+  - codementality/ddev-floci-ui
+
+project_files:
+  - docker-compose.floci-az.yaml
+  - config.floci-az.yaml
+  - floci-az/create-containers.sh
+  - docker-compose.floci-az-docker.yaml
+  - docker-compose.floci-az-web.yaml
+  - commands/host/floci-az
+
+post_install_actions:
+  - chmod +x commands/host/floci-az
+  - chmod +x floci-az/create-containers.sh
+  - |
+    #ddev-description:Check that the Docker socket is reachable
+    # Floci runs Azure Functions, Cosmos engines, SQL Server, Redis, ACR and AKS
+    # as real containers, which needs the host's Docker socket. This is a
+    # warning, not an error: the in-process services (Blob, Queue, Table, Key
+    # Vault, App Configuration, Cosmos NoSQL, Entra ID, Managed Identity, Event
+    # Grid, Monitor, APIM, Email, ARM) all work without it.
+    if [ ! -S /var/run/docker.sock ]; then
+      echo "Note: /var/run/docker.sock was not found on this host." >&2
+      echo "Docker-backed services (Functions, SQL, Cosmos engines, Redis, ACR, AKS) will not start." >&2
+      echo "If your Docker provider puts the socket elsewhere, remove the mount with:" >&2
+      echo "  rm ${DDEV_APPROOT}/.ddev/docker-compose.floci-az-docker.yaml" >&2
+    fi
+  - |
+    #ddev-description:Report how floci-az is wired up
+    echo "Floci will serve the Azure API at http://floci-az:4577 inside the project."
+    echo "The web container already has AZURE_STORAGE_CONNECTION_STRING set for it."
+    echo "Run 'ddev restart', then 'ddev floci-az url' and 'ddev floci-az az storage container list'."
+    echo "From the host it is at http://<project>.ddev.site:4577 via ddev-router — stable,"
+    echo "and shared cleanly with other projects running this add-on."
+    echo "For a host-side az CLI: eval \"\$(ddev floci-az env)\"."
+    echo "Two Blob Storage containers are created on every start: 'public' and 'private'."
+    echo "Note that floci-az does not enforce container permissions — see the README."
+    echo "Azure SQL stays ARM-state-only until you accept Microsoft's EULA:"
+    echo "  ddev dotenv set .ddev/.env.floci-az --floci-az-services-sql-accept-eula=Y"
+
+removal_actions:
+  - |
+    #ddev-description:Remove the floci-az helper directory
+    dir="${DDEV_APPROOT}/.ddev/floci-az"
+    if [ -d "${dir}" ]; then
+      if [ -z "$(find "${dir}" -type f ! -name 'create-containers.sh' -print -quit)" ]; then
+        rm -rf "${dir}"
+      else
+        echo "Leaving '${dir}' in place because it contains files of your own; delete it manually if you no longer need them."
+      fi
+    fi
+  - |
+    #ddev-description:Note the emulated Azure state that outlives the add-on
+    # Neither DDEV nor this add-on deletes the state volume: removing an add-on
+    # should not silently destroy the data it was holding. Report the exact
+    # command instead, and only when there is actually something to remove.
+    # The compose project is ddev-<project>, so a project already named
+    # ddev-something produces a doubled prefix. Look the name up rather than
+    # assuming it.
+    vol="$(docker volume ls -q \
+      --filter "label=com.docker.compose.project=ddev-${DDEV_PROJECT}" \
+      --filter "label=com.docker.compose.volume=floci-az" 2>/dev/null)"
+    if [ -n "${vol}" ]; then
+      echo "The emulated Azure state is in a Docker volume and was not deleted."
+      echo "Remove it with: docker volume rm ${vol}"
+    fi
+    # Containers Floci started are its own, not DDEV's, and `ddev floci-az
+    # reset` is gone along with the add-on, so name them explicitly here.
+    # floci_namespace is what scopes this to THIS project; the emulator label
+    # alone also matches the floci-az containers of every other project.
+    ns="$(grep -sE '^FLOCI_AZ_DOCKER_RESOURCE_NAMESPACE=' "${DDEV_APPROOT}/.ddev/.env.floci-az" | tail -n1 | cut -d= -f2- | tr -d '\047" ' || true)"
+    ns="${ns:-${DDEV_PROJECT}}"
+    orphans="$(docker ps -aq \
+      --filter "label=floci_emulator=floci-az" \
+      --filter "label=floci_namespace=${ns}" 2>/dev/null)"
+    if [ -n "${orphans}" ]; then
+      echo "$(echo "${orphans}" | wc -l | tr -d ' ') container(s) started by Floci for this project are still present."
+      echo "Remove them with:"
+      echo "  docker rm -f \$(docker ps -aq --filter label=floci_emulator=floci-az --filter label=floci_namespace=${ns})"
+    fi
+  - |
+    #ddev-description:Note the floci-az .env file
+    file="${DDEV_APPROOT}/.ddev/.env.floci-az"
+    if [ -f "${file}" ]; then
+      echo "Leaving '${file}' in place; delete it manually if you no longer need your floci-az settings."
+    fi
