@@ -1,5 +1,6 @@
 # ddev-floci-az <!-- omit in toc -->
 
+[![add-on registry](https://img.shields.io/badge/DDEV-Add--on_Registry-blue)](https://addons.ddev.com)
 [![tests](https://github.com/codementality/ddev-floci-az/actions/workflows/tests.yml/badge.svg)](https://github.com/codementality/ddev-floci-az/actions/workflows/tests.yml)
 [![last commit](https://img.shields.io/github/last-commit/codementality/ddev-floci-az)](https://github.com/codementality/ddev-floci-az/commits)
 [![release](https://img.shields.io/github/v/release/codementality/ddev-floci-az)](https://github.com/codementality/ddev-floci-az/releases/latest)
@@ -29,6 +30,7 @@ no Azure subscription, no service principal, and no billing account.
 - [Configuration](#configuration)
 - [The `ddev floci-az` command](#the-ddev-floci-az-command)
 - [Removing the add-on](#removing-the-add-on)
+- [Licensing](#licensing)
 - [Credits](#credits)
 
 ## Why this add-on
@@ -494,10 +496,26 @@ docker rm -f $(docker ps -aq \
   --filter label=floci_namespace=<project>)
 ```
 
+## Licensing
+
+Two different licences are in play here, and it is worth being explicit about
+which covers what:
+
+- **This add-on** — the compose files, the `ddev floci-az` command, the init
+  scripts and the documentation — is licensed **Apache 2.0**, matching the DDEV
+  add-on template and DDEV's own add-ons. See [LICENSE](LICENSE).
+- **floci-az itself** is licensed **MIT** by the
+  [floci-io](https://github.com/floci-io/floci-az) project, and is entirely separate work.
+
+**No Floci source is vendored in this repository.** The add-on only references
+the published `floci/floci-az` image, which Docker pulls at runtime; nothing
+here redistributes Floci code or binaries. If you redistribute this add-on you
+are redistributing Apache-2.0 material only.
+
 ## Credits
 
-floci-az is by the [floci-io](https://github.com/floci-io/floci-az) project, MIT
-licensed. This add-on only packages it; no Floci source is vendored here.
+floci-az is by the [floci-io](https://github.com/floci-io/floci-az) project, MIT licensed. This add-on packages
+it under Apache 2.0; see [Licensing](#licensing) above.
 
 Behavioural notes in this README were verified against `floci/floci-az:0.11.0` on 2026-08-26.
 Upstream ships frequently; the nightly workflow in `.github/workflows/tests.yml`
